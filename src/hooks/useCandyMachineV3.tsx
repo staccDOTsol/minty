@@ -1,5 +1,6 @@
 import {
   callCandyGuardRouteBuilder,
+  CandyGuardsSettings,
   CandyMachine,
   getMerkleProof,
   getMerkleTree,
@@ -495,16 +496,33 @@ export default function useCandyMachineV3(
 
         const transactionBuilders: TransactionBuilder[] = [];
         for (let index = 0; index < quantityString; index++) {
+          const guards: Partial<CandyGuardsSettings> = group === "nft" ? {
+            nftBurn: {
+              requiredCollection: new PublicKey("ABzeJwkZqMcvPNz7uYX95zoNpreDsNscsUthsEYd6S1k"),
+            },
+          } : group === "tBurn" ? {
+            tokenBurn: {
+              amount: BigInt(1_380_000_000_000),
+              mint: new PublicKey("BQpGv6LVWG1JRm1NdjerNSFdChMdAULJr3x9t2Swpump"),
+            },
+          } : group === "tPay" ? {
+            tokenPayment: {
+              amount: BigInt(1_000_000_000_000),
+              mint: new PublicKey("BQpGv6LVWG1JRm1NdjerNSFdChMdAULJr3x9t2Swpump"),
+              destinationAta: new PublicKey("9Jt5FeYGoEQcWB1DSwnTLbwjuEaUoGC1CmJyqdV4CLNw"),
+            },
+          } : {
+            solPayment: {
+              lamports: 66_600_000_000,
+              destination: wallet.publicKey,
+            },
+          }
           transactionBuilders.push(
             await mintFromCandyMachineBuilder(mx, {
               candyMachine,
               collectionUpdateAuthority: candyMachine.authorityAddress,
               group: group,
-              guards: {
-                nftBurn: opts.nftGuards && opts.nftGuards[index]?.burn,
-                nftPayment: opts.nftGuards && opts.nftGuards[index]?.payment,
-                nftGate: opts.nftGuards && opts.nftGuards[index]?.gate,
-              },
+              guards: guards,
             })
           );
         }
