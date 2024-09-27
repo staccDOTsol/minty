@@ -435,7 +435,7 @@ export default function useCandyMachineV3(
       "6g5LAays7iWt3fcb74xuiTMDGKT3NFF2hijv7LqHKrNj",
       "AxqUj6FnBqDr5MQjLTJGfd1ThAbAxvBHtRKWpHvM7YTW"
     ]              
-    const hasSpecifiedNFT = nftHoldings.some(nft => mints.includes(nft.address.toString()));
+    const hasSpecifiedNFT = nftHoldings.some(nft => mints.includes(nft.mintAddress.toString()));
     if (hasSpecifiedNFT) return "nft";
 
     // Check if they hold 1.38m fomo3d
