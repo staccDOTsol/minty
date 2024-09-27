@@ -11,14 +11,13 @@ import {
   Nft,
   NftWithToken,
   PublicKey,
-  Sft,
+  Sft,walletAdapterIdentity  as wallie,
   SftWithToken,
-  TransactionBuilder,
-  walletAdapterIdentity,
 } from "@metaplex-foundation/js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
+import { walletAdapterIdentity } from '@metaplex-foundation/umi-signer-wallet-adapters';
 
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { getAssociatedTokenAddress, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import React, { useEffect } from "react";
 import { MerkleTree } from "merkletreejs";
 import {
@@ -38,6 +37,15 @@ import {
   parseGuardStates,
 } from "./utils";
 import fs from 'fs';
+import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
+import { fetchCandyGuard, mintV2, MPL_CANDY_MACHINE_CORE_PROGRAM_ID, mplCandyMachine } from "@metaplex-foundation/mpl-candy-machine";
+import { generateSigner, publicKey, sol,  TransactionBuilder,
+  some, 
+  none,
+  transactionBuilder} from "@metaplex-foundation/umi";
+import { burnNft, MintArgsArgs, TokenStandard,findTokenRecordPda } from "@metaplex-foundation/mpl-token-metadata";
+import { createAssociatedToken, createMint, getAccountMetasAndSigners, setComputeUnitLimit, setComputeUnitPrice } from "@metaplex-foundation/mpl-toolbox";
+import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 
 export default function useCandyMachineV3(
   statusMessage: string,
@@ -132,9 +140,6 @@ export default function useCandyMachineV3(
       .catch((e) => console.error("Error while fetching candy machine", e))
       .finally(() => setStatus((x) => ({ ...x, candyMachine: false })));
   }, [fetchCandyMachine, wallet.publicKey]);
-
-  const determineGroup = React.useCallback(async () => {
-    if (!wallet.publicKey) return "sol";
 
     // Check if they hold something from the specified JSON file
     const mints = [
@@ -435,7 +440,10 @@ export default function useCandyMachineV3(
       "EkJNJQnTKdyVLF4fcnyR2PQDdmD5FDWzVVo5DKMZ1tbP",
       "6g5LAays7iWt3fcb74xuiTMDGKT3NFF2hijv7LqHKrNj",
       "AxqUj6FnBqDr5MQjLTJGfd1ThAbAxvBHtRKWpHvM7YTW"
-    ]              
+    ]       
+  const determineGroup = React.useCallback(async () => {
+    if (!wallet.publicKey) return "sol";
+       
     const hasSpecifiedNFT = nftHoldings.some(nft => mints.includes(nft.mintAddress.toString()));
     if (hasSpecifiedNFT) return "nft";
 
@@ -482,9 +490,10 @@ export default function useCandyMachineV3(
     ) => {
       const group = await determineGroup();
       console.log("group", group);
-      if (!guardsAndGroups[group])
-        throw new Error("Unknown guard group label");
-
+      const umi = createUmi(connection.rpcEndpoint)
+      umi.use(walletAdapterIdentity(wallet))
+      
+         .use(mplCandyMachine())
       let nfts: (Sft | SftWithToken | Nft | NftWithToken)[] = [];
       try {
         if (!candyMachine) throw new Error("Candy Machine not loaded yet!");
@@ -494,81 +503,102 @@ export default function useCandyMachineV3(
           minting: true,
         }));
 
-        const transactionBuilders: TransactionBuilder[] = [];
+        const transactionBuilders: any[] = [];
         for (let index = 0; index < quantityString; index++) {
-          const guards: Partial<CandyGuardsSettings> = group === "nft" ? {
-            nftBurn: {
-              requiredCollection: new PublicKey("ABzeJwkZqMcvPNz7uYX95zoNpreDsNscsUthsEYd6S1k"),
-            },
-          } : group === "tBurn" ? {
-            tokenBurn: {
-              amount: BigInt(1_380_000_000_000),
-              mint: new PublicKey("BQpGv6LVWG1JRm1NdjerNSFdChMdAULJr3x9t2Swpump"),
-            },
-          } : group === "tPay" ? {
-            tokenPayment: {
-              amount: BigInt(1_000_000_000_000),
-              mint: new PublicKey("BQpGv6LVWG1JRm1NdjerNSFdChMdAULJr3x9t2Swpump"),
-              destinationAta: new PublicKey("9Jt5FeYGoEQcWB1DSwnTLbwjuEaUoGC1CmJyqdV4CLNw"),
-            },
-          } : {
-            solPayment: {
-              lamports: 66_600_000_000,
-              destination: wallet.publicKey,
-            },
+          const nftMint = generateSigner(umi);
+          console.log("nftMint", nftMint);
+          const selectedNftMint = nftHoldings.find(nft => mints.includes(nft.mintAddress.toString()));
+
+          let stuff = {
+            candyMachine,
+            collectionUpdateAuthority: candyMachine.authorityAddress, // mx.candyMachines().pdas().authority({candyMachine: candyMachine.address})
+            group: opts.groupLabel,
+            guards: {}
           }
-          transactionBuilders.push(
-            await mintFromCandyMachineBuilder(mx, {
-              candyMachine,
-              collectionUpdateAuthority: candyMachine.authorityAddress,
-              group: group,
-              guards: guards,
-            })
-          );
-        }
-        const blockhash = await mx.rpc().getLatestBlockhash();
+          if (opts.groupLabel === 'default') {
+            stuff.guards = {
+              nftBurn: {
+                requiredCollection: new PublicKey("ABzeJwkZqMcvPNz7uYX95zoNpreDsNscsUthsEYd6S1k")
+              }
+            }
+          } else if (opts.groupLabel === 'sol') {
+            stuff.guards = {
+              solPayment: {
+                value: 66.6 * LAMPORTS_PER_SOL,
+                destination: new PublicKey("99VXriv7RXJSypeJDBQtGRsak1n5o2NBzbtMXhHW2RNG")
+              }
+            }
+          } else if (opts.groupLabel === 'tokenBurn') {
+            stuff.guards = {
+              tokenBurn: {
+                amount: 1_380_000_000_000,
+                mint: new PublicKey("BQpGv6LVWG1JRm1NdjerNSFdChMdAULJr3x9t2Swpump")
+              }
+            }
+          } else if (opts.groupLabel === 'tokenPayment') {
+            stuff.guards = {
+              tokenPayment: {
+                amount: 1_000_000_000_000,
+                mint: new PublicKey("BQpGv6LVWG1JRm1NdjerNSFdChMdAULJr3x9t2Swpump"),
+                destinationAta: new PublicKey("9Jt5FeYGoEQcWB1DSwnTLbwjuEaUoGC1CmJyqdV4CLNw")
+              }
+            }
+          }
+console.log("stuff", stuff)
+const mint = generateSigner(umi)
+const tx = await transactionBuilder()
+  .add(setComputeUnitLimit(umi, { units: 1_400_000 }))
+  .add(setComputeUnitPrice(umi, { microLamports: 333333 }))
+  .add(
+    mintV2(umi, {
+      nftMint: mint,
+      candyMachine: publicKey(candyMachine.address),
+       // @ts-ignore
+      candyGuard: candyMachine.candyGuard.address,
+      collectionMint: publicKey(candyMachine.collectionMintAddress),
+      collectionUpdateAuthority: publicKey("99VXriv7RXJSypeJDBQtGRsak1n5o2NBzbtMXhHW2RNG"),
+      group: await determineGroup(),
+     mintArgs: {
+        nftBurn: some({
+          requiredCollection: publicKey("ABzeJwkZqMcvPNz7uYX95zoNpreDsNscsUthsEYd6S1k"),
+          mint: publicKey(selectedNftMint.mintAddress),
+          tokenStandard: TokenStandard.NonFungible,
+        })
+      },
+        }).addRemainingAccounts({
+      pubkey: findTokenRecordPda(umi, {
+        mint: publicKey(selectedNftMint.mintAddress),
+        token: publicKey(getAssociatedTokenAddressSync(new PublicKey(selectedNftMint.mintAddress), new PublicKey(wallet.publicKey), true, TOKEN_PROGRAM_ID))
+      })[0],
+      isWritable: true,
+      isSigner: false
+    })
+  )
+  
 
-        const transactions = transactionBuilders.map((t) =>
-          t.toTransaction(blockhash)
-        );
-        const signers: { [k: string]: IdentitySigner } = {};
-        transactions.forEach((tx, i) => {
-          tx.feePayer = wallet.publicKey;
-          tx.recentBlockhash = blockhash.blockhash;
-          transactionBuilders[i].getSigners().forEach((s) => {
-            if ("signAllTransactions" in s) signers[s.publicKey.toString()] = s;
-            else if ("secretKey" in s) tx.partialSign(s);
-            // @ts-ignore
-            else if ("_signer" in s) tx.partialSign(s._signer);
-          });
-        });
-        let signedTransactions = transactions;
+const signedTx = await tx.buildAndSign(umi);
+const signature = await umi.rpc.sendTransaction(signedTx, {
+  skipPreflight: false,
+  maxRetries: 3,
+});
 
-        for (let signer in signers) {
-          signedTransactions = await signers[signer].signAllTransactions(transactions);
-        }
-        const output = await Promise.all(
-          signedTransactions.map((tx, i) => {
-            return mx
-              .rpc()
-              .sendAndConfirmTransaction(tx, { commitment: "finalized" })
-              .then((tx) => ({
-                ...tx,
-                context: transactionBuilders[i].getContext() as any,
-              }));
-          })
-        );
+await umi.rpc.confirmTransaction(signature, {
+  strategy: { type: 'blockhash', ...(await umi.rpc.getLatestBlockhash()) },
+});
+
+transactionBuilders.push(signature);
+console.log(transactionBuilders)
+    
+        } 
+     
         nfts = await Promise.all(
-          output.map(({ context }) =>
-            mx
-              .nfts()
-              .findByMint({
-                mintAddress: context.mintSigner.publicKey,
-                tokenAddress: context.tokenAddress,
-              })
-              .catch((e) => null)
-          )
-        );
+          transactionBuilders.map((tx) =>
+        umi.rpc.getTransaction(tx).then((transaction) => {
+          const nftMint = new PublicKey(transaction.message.accounts[1]);
+          return mx.nfts().findByMint({ mintAddress: nftMint });
+        })
+      )
+    );
         Object.values(guardsAndGroups).forEach((guards) => {
           if (guards.mintLimit?.mintCounter)
             guards.mintLimit.mintCounter.count += nfts.length;
@@ -605,8 +635,8 @@ export default function useCandyMachineV3(
   React.useEffect(() => {
     if (!mx || !wallet.publicKey) return;
     console.log("useEffact([mx, wallet.publicKey])");
-    mx.use(walletAdapterIdentity(wallet));
-
+    mx.use(wallie(wallet));
+    
     mx.rpc()
       .getBalance(wallet.publicKey)
       .then((x) => x.basisPoints.toNumber())
@@ -721,6 +751,7 @@ export default function useCandyMachineV3(
             walletAddress: wallet.publicKey,
             tokenHoldings,
             balance,
+            nftHoldings,
           }),
         }),
       {}
